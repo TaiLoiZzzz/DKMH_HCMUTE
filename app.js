@@ -57,8 +57,8 @@ function getHeaders() {
 
 // 2. Sinh thời gian ngẫu nhiên (Từ 50s -> 75s) để né Tường lửa đếm nhịp
 function getRandomInterval() {
-    const min = 50 * 1000;
-    const max = 75 * 1000;
+    const min = 240 * 1000;
+    const max = 360 * 1000;
     return Math.floor(Math.random() * (max - min + 1) + min);
 }
 
@@ -74,7 +74,7 @@ function scheduleNextRun() {
 // ==========================================
 console.clear();
 console.log("====================================================================");
-console.log(" HỆ THỐNG AUTO-KILL ĐKMH [BẢN MAX PING - ENTERPRISE ARCHITECTURE] ");
+console.log(" HỆ THỐNG AUTO-KILL ĐKMH ");
 console.log("====================================================================\n");
 rl.question(' Nhập mã môn học mày muốn săn (VD: 261LLCT120205): ', (answer) => {
     let maMon = `261${answer.trim()}`; // Nhập full mã môn cho chính xác
@@ -159,6 +159,44 @@ async function startSniffer() {
     // Ép trình duyệt truy cập web để mồi cho 2 hàm chặn luồng phía trên hoạt động
     try {
         await page.goto('https://dkmh.hcmute.edu.vn/', { waitUntil: 'networkidle2' });
+
+        // AUTO-LOGIN LOGIC: Bấm "Đăng nhập với Google" và chọn tài khoản trong popup
+        setTimeout(async () => {
+            if (!isTokenGrabbed) {
+                console.log("-> [AUTO-LOGIN] Đang thử tự động đăng nhập...");
+                try {
+                    // 1. Tìm và click nút "Đăng nhập với Google" trên trang chính
+                    await page.evaluate(() => {
+                        const elements = Array.from(document.querySelectorAll('button, div, span'));
+                        const loginBtn = elements.find(el => el.innerText && el.innerText.includes('Đăng nhập với Google'));
+                        if (loginBtn) loginBtn.click();
+                    });
+
+                    // 2. Đợi cửa sổ popup của Google xuất hiện (URL chứa accounts.google.com)
+                    const target = await browser.waitForTarget(t => t.url().includes('accounts.google.com'), { timeout: 10000 });
+                    const popup = await target.page();
+
+                    if (popup) {
+                        console.log("-> [AUTO-LOGIN] Đã bắt được Popup Google, đang chọn email...");
+                        // Đợi một chút cho danh sách tài khoản load xong
+                        await new Promise(resolve => setTimeout(resolve, 3000)); 
+
+                        // 3. Click vào tài khoản sinh viên
+                        await popup.evaluate(() => {
+                            // Tìm element có chứa đuôi email sinh viên trường và click
+                            const elements = Array.from(document.querySelectorAll('*'));
+                            const emailEl = elements.find(el => el.innerText && el.innerText.includes('@student.hcmute.edu.vn'));
+                            if (emailEl) {
+                                emailEl.click();
+                            }
+                        });
+                    }
+                } catch (e) {
+                    // Lỗi (timeout ko thấy popup) thì im lặng, vì có thể token đã lấy được ngầm
+                }
+            }
+        }, 3000);
+
     } catch (error) {
         // Nếu lỗi là do trình duyệt bị giật sập giữa chừng (detached/closed) thì bỏ qua
         if (!error.message.includes('detached') && !error.message.includes('Target closed') && !error.message.includes('Session closed')) {
