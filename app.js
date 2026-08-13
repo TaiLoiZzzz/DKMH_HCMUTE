@@ -1,6 +1,6 @@
 // ==============================================================================
 // HỆ THỐNG AUTO-KILL ĐĂNG KÝ MÔN HỌC (BẢN TỐI THƯỢNG - FULLY AUTOMATED)
-// Kiến trúc: Tàng hình (Stealth) + Đánh chặn Token + Auto Recovery + Random Jitter
+// Kiến trúc: Tàng hình (Stealth) + Đánh chặn Token + Auto Recovery + Random Jitter + Multi-threading
 // ==============================================================================
 
 const puppeteer = require('puppeteer-extra');
@@ -28,15 +28,19 @@ const REGIST_API = `https://dangkyapi.hcmute.edu.vn/api/Regist/RegistScheduleStu
 
 // Biến trạng thái toàn cục
 let jwtToken = "";
-let PAYLOAD = { ReqParam1: STUDY_PROGRAM_ID, ReqParam2: "NKH", ReqParam3: "" };
-let isSystemHalted = false; // Semaphore khóa luồng
-let ignoredClasses = [];    // Blacklist các lớp trùng lịch
-let isOnlyMooc = false;     // Cờ lọc lớp MOOC
+let isSystemHalted = false; // Semaphore khóa luồng tác chiến
+let isRecovering = false;   // Lock khi xin lại Token
+let ignoredClasses = [];    // Blacklist các lớp trùng lịch chung
+
+// Mảng chứa danh sách các môn mục tiêu
+let targets = [];
 
 const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout
 });
+
+const askQuestion = (query) => new Promise(resolve => rl.question(query, resolve));
 
 // ==========================================
 // HÀM BỔ TRỢ
@@ -56,54 +60,117 @@ function getHeaders() {
     };
 }
 
-// 2. Sinh thời gian ngẫu nhiên (Từ 50s -> 75s) để né Tường lửa đếm nhịp
+// 2. Sinh thời gian ngẫu nhiên (Từ 240s -> 360s) để né Tường lửa đếm nhịp
 function getRandomInterval() {
     const min = 240 * 1000;
     const max = 360 * 1000;
     return Math.floor(Math.random() * (max - min + 1) + min);
 }
 
-// 3. Hàm điều phối luồng chạy ngầm
-function scheduleNextRun() {
-    const delay = getRandomInterval();
-    console.log(`\n⏳ Nằm vùng. Nhịp quét tiếp theo sau: ${(delay / 1000).toFixed(1)} giây...`);
-    setTimeout(checkAvailableSlots, delay);
+// 3. Hàm điều phối luồng chạy ngầm cho từng môn
+function scheduleNextRun(targetIndex, customDelay = null) {
+    const target = targets[targetIndex];
+    if (target.isDone) return;
+
+    const delay = customDelay || getRandomInterval();
+    target.nextRunTime = new Date(Date.now() + delay).toLocaleTimeString();
+
+    setTimeout(() => {
+        checkAvailableSlots(targetIndex);
+    }, delay);
+
+    renderDashboard();
+}
+
+// 4. Render Dashboard tập trung
+function renderDashboard() {
+    if (isSystemHalted) return; // Đang tác chiến thì ngừng render đè màn hình
+
+    console.clear();
+    console.log("====================================================================");
+    console.log(" HỆ THỐNG AUTO-KILL ĐKMH (MULTI-THREADING)");
+    console.log(` Trạng thái Token: ${jwtToken ? "🟢 Hoạt động" : "🔴 Đang lấy/Phục hồi"}`);
+    console.log("====================================================================\n");
+
+    targets.forEach((t, index) => {
+        if (t.isDone) {
+            console.log(`[🎯 MỤC TIÊU ${index + 1}: ${t.maMon}] -> ✅ ĐÃ HOÀN THÀNH`);
+            console.log("------------------------------------------------------------------");
+        } else {
+            console.log(`[📡 RADAR ${index + 1}] Mục tiêu: ${t.maMon} ${t.isOnlyMooc ? "(Chỉ MOOC)" : "(Tất cả)"}`);
+            console.log(`-> Nhịp quét tiếp theo lúc: ${t.nextRunTime || 'Đang chờ...'}`);
+
+            if (t.tableData && t.tableData.length > 0) {
+                console.table(t.tableData);
+            } else if (t.lastMessage) {
+                console.log(`-> ${t.lastMessage}`);
+            }
+            console.log("------------------------------------------------------------------");
+        }
+    });
 }
 
 // ==========================================
-// KHỞI ĐỘNG HỆ THỐNG
+// KHỞI ĐỘNG HỆ THỐNG (CLI)
 // ==========================================
-console.clear();
-console.log("====================================================================");
-console.log(" HỆ THỐNG AUTO-KILL ĐKMH ");
-console.log("====================================================================\n");
-rl.question(' Nhập mã môn học mày muốn săn (VD: 261LLCT120205): ', (answer) => {
-    let maMon = `261${answer.trim()}`; // Nhập full mã môn cho chính xác
-    if (!maMon) {
-        console.log(" Lỗi: Mã môn trống. Khởi động lại đi.");
+async function initSystem() {
+    console.clear();
+    console.log("====================================================================");
+    console.log(" HỆ THỐNG AUTO-KILL ĐKMH ");
+    console.log("====================================================================\n");
+
+    let numStr = await askQuestion(' Bạn muốn đăng ký bao nhiêu môn cùng lúc? (VD: 2): ');
+    let numTargets = parseInt(numStr.trim());
+    if (isNaN(numTargets) || numTargets <= 0) {
+        console.log(" Lỗi: Số lượng không hợp lệ.");
         process.exit(1);
     }
-    PAYLOAD.ReqParam3 = maMon;
-    console.log(`\n-> [LOCKED] Đã khóa mục tiêu: ${PAYLOAD.ReqParam3}`);
 
-    rl.question(' Bạn có muốn CHỈ chọn lớp MOOC không? (y = Chỉ MOOC, n = Tất cả các lớp): ', (moocAns) => {
-        isOnlyMooc = moocAns.trim().toLowerCase() === 'y';
-        if (isOnlyMooc) {
-            console.log(`-> [LOCKED] Chế độ: CHỈ săn lớp MOOC (đuôi UTExMC)!`);
-        } else {
-            console.log(`-> [LOCKED] Chế độ: Săn TẤT CẢ các lớp!`);
+    for (let i = 0; i < numTargets; i++) {
+        console.log(`\n--- NHẬP THÔNG TIN MÔN THỨ ${i + 1} ---`);
+        let maMonInput = await askQuestion(' Nhập mã môn học (VD: 261LLCT120205): ');
+        let maMon = `261${maMonInput.trim()}`;
+        if (!maMonInput.trim()) {
+            console.log(" Lỗi: Mã môn trống. Bỏ qua môn này.");
+            continue;
         }
-        rl.close();
 
-        // Kích hoạt chuỗi dây chuyền
-        startSniffer();
-    });
-});
+        let moocAns = await askQuestion(' Bạn có muốn CHỈ chọn lớp MOOC không? (y = Chỉ MOOC, n = Tất cả các lớp): ');
+        let isOnlyMooc = moocAns.trim().toLowerCase() === 'y';
+
+        targets.push({
+            maMon: maMon,
+            isOnlyMooc: isOnlyMooc,
+            tableData: [],
+            isDone: false,
+            nextRunTime: null,
+            lastMessage: "Chờ quét lần đầu...",
+            payload: { ReqParam1: STUDY_PROGRAM_ID, ReqParam2: "NKH", ReqParam3: maMon }
+        });
+
+        console.log(`-> [LOCKED] Đã khóa mục tiêu ${i + 1}: ${maMon} ${isOnlyMooc ? "(Chỉ MOOC)" : "(Tất cả)"}`);
+    }
+
+    rl.close();
+
+    if (targets.length === 0) {
+        console.log("Không có môn nào được chọn. Thoát.");
+        process.exit(0);
+    }
+
+    console.log("\n-> Kích hoạt chuỗi dây chuyền...");
+    startSniffer();
+}
+
+// Bắt đầu
+initSystem();
 
 // ==========================================
 // PHASE 1: VƯỢT GOOGLE & TRỘM TOKEN (TÍCH HỢP AUTO-RECOVERY)
 // ==========================================
 async function startSniffer() {
+    if (jwtToken) return; // Nếu đã có token thì thôi (đề phòng gọi nhiều lần)
+
     console.log("-> [1] Kích hoạt Stealth Engine & Phục hồi Cookie...");
 
     const browser = await puppeteer.launch({
@@ -123,7 +190,7 @@ async function startSniffer() {
     const page = await browser.newPage();
     let isTokenGrabbed = false;
 
-    // CHIÊU 1: Đánh chặn Outbound Request (Bắt Token lúc gửi đi)
+    // CHIÊU 1: Đánh chặn Outbound Request
     page.on('request', async (request) => {
         if (isTokenGrabbed) return;
 
@@ -137,12 +204,11 @@ async function startSniffer() {
             console.log(`\n-> [THÀNH CÔNG] Đã móc được Token từ phiên đăng nhập cục bộ!`);
             await browser.close().catch(e => { });
 
-            console.log("-> [2] Giật sập trình duyệt. Kích hoạt Radar cào dữ liệu ngầm.\n");
-            checkAvailableSlots(); // Đẩy sang Phase 2
+            finishSniffer();
         }
     });
 
-    // CHIÊU 2: Đánh chặn Inbound Response (Bắt Token lúc Server trả về nếu Token cũ chết hẳn)
+    // CHIÊU 2: Đánh chặn Inbound Response
     page.on('response', async (response) => {
         if (isTokenGrabbed) return;
 
@@ -158,78 +224,149 @@ async function startSniffer() {
                     console.log(`-> Hạn Token: ${data.Expire}`);
 
                     await browser.close().catch(e => { });
-                    console.log("-> [2] Giật sập trình duyệt. Kích hoạt Radar cào dữ liệu ngầm.\n");
 
-                    checkAvailableSlots(); // Đẩy sang Phase 2
+                    finishSniffer();
                 }
             } catch (err) { }
         }
     });
 
-    // Ép trình duyệt truy cập web để mồi cho 2 hàm chặn luồng phía trên hoạt động
     try {
         await page.goto('https://dkmh.hcmute.edu.vn/', { waitUntil: 'networkidle2' });
 
-        // AUTO-LOGIN LOGIC: Bấm "Đăng nhập với Google" và chọn tài khoản trong popup
-        setTimeout(async () => {
-            if (!isTokenGrabbed) {
-                console.log("-> [AUTO-LOGIN] Đang thử tự động đăng nhập...");
-                try {
-                    // 1. Tìm và click nút "Đăng nhập với Google" trên trang chính
-                    await page.evaluate(() => {
-                        const elements = Array.from(document.querySelectorAll('button, div, span'));
-                        const loginBtn = elements.find(el => el.innerText && el.innerText.includes('Đăng nhập với Google'));
-                        if (loginBtn) loginBtn.click();
-                    });
+        // AUTO-LOGIN LOGIC
+        (async () => {
+            try {
+                console.log("-> [AUTO-LOGIN] Đang chờ giao diện tải...");
 
-                    // 2. Đợi cửa sổ popup của Google xuất hiện (URL chứa accounts.google.com)
-                    const target = await browser.waitForTarget(t => t.url().includes('accounts.google.com'), { timeout: 10000 });
-                    const popup = await target.page();
+                // Đợi tối đa 15s cho đến khi thấy nút Đăng nhập trên màn hình
+                await page.waitForFunction(() => {
+                    const elements = Array.from(document.querySelectorAll('a, button, div, span'));
+                    return elements.some(el => el.innerText && el.innerText.toLowerCase().includes('đăng nhập với google'));
+                }, { timeout: 15000 });
 
-                    if (popup) {
-                        console.log("-> [AUTO-LOGIN] Đã bắt được Popup Google, đang chọn email...");
-                        // Đợi một chút cho danh sách tài khoản load xong
-                        await new Promise(resolve => setTimeout(resolve, 3000));
+                if (isTokenGrabbed) return;
 
-                        // 3. Click vào tài khoản sinh viên
-                        await popup.evaluate(() => {
-                            // Tìm element có chứa đuôi email sinh viên trường và click
-                            const elements = Array.from(document.querySelectorAll('*'));
-                            const emailEl = elements.find(el => el.innerText && el.innerText.includes('@student.hcmute.edu.vn'));
-                            if (emailEl) {
-                                emailEl.click();
+                console.log("-> [AUTO-LOGIN] Đã thấy nút Đăng nhập, đang thực hiện click...");
+                const clicked = await page.evaluate(() => {
+                    const elements = Array.from(document.querySelectorAll('a, button, div, span'));
+                    // Tìm tất cả các thẻ có chứa chữ đăng nhập với google
+                    const loginBtns = elements.filter(el => el.innerText && el.innerText.toLowerCase().includes('đăng nhập với google'));
+
+                    if (loginBtns.length > 0) {
+                        // Ưu tiên click vào thẻ Button hoặc thẻ Link (A), nếu không có thì click thằng đầu tiên
+                        let target = loginBtns.find(el => el.tagName === 'BUTTON' || el.tagName === 'A') || loginBtns[0];
+                        target.click();
+                        return true;
+                    }
+                    return false;
+                });
+
+                if (clicked) {
+                    console.log("-> [AUTO-LOGIN] Đã click nút! Chờ màn hình chọn Google Account...");
+                    const target = await browser.waitForTarget(t => t.url().includes('accounts.google.com'), { timeout: 15000 });
+                    const googlePage = await target.page();
+
+                    if (googlePage) {
+                        console.log("-> [AUTO-LOGIN] Đang tìm email đuôi @student.hcmute.edu.vn...");
+
+                        // Chờ tài khoản xuất hiện trên màn hình
+                        await googlePage.waitForFunction(() => {
+                            const elements = Array.from(document.querySelectorAll('div, span, li, a'));
+                            return elements.some(el => el.innerText && el.innerText.includes('@student.hcmute.edu.vn'));
+                        }, { timeout: 15000 });
+
+                        // Đợi thêm 1s cho UI ổn định
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+
+                        await googlePage.evaluate(() => {
+                            const emailSuffix = '@student.hcmute.edu.vn';
+
+                            // 1. Thử tìm theo chuẩn của Google (data-identifier)
+                            const accountDiv = document.querySelector(`[data-identifier*="${emailSuffix}"]`);
+                            if (accountDiv) {
+                                accountDiv.click();
+                                return;
+                            }
+
+                            // 2. Tìm thẻ chứa text, sau đó lùi lên tìm vùng bấm (click handler)
+                            const elements = Array.from(document.querySelectorAll('div, span, li, a'));
+                            const emailEls = elements.filter(el => el.innerText && el.innerText.includes(emailSuffix));
+
+                            if (emailEls.length > 0) {
+                                // Lấy thẻ nằm sâu nhất (chính là dòng chữ email)
+                                let target = emailEls[emailEls.length - 1];
+
+                                // Dò ngược lên DOM tree để tìm thẻ bọc bên ngoài có sự kiện click
+                                let parent = target;
+                                while (parent && parent !== document.body) {
+                                    const role = parent.getAttribute('role');
+                                    if (parent.tagName === 'LI' || role === 'button' || role === 'link' || parent.hasAttribute('jsaction')) {
+                                        parent.click();
+                                        return;
+                                    }
+                                    parent = parent.parentElement;
+                                }
+
+                                // Nếu không tìm thấy thẻ bọc chuẩn, thì click thẳng vào chữ
+                                target.click();
                             }
                         });
+                        console.log("-> [AUTO-LOGIN] Đã click chọn tài khoản sinh viên thành công!");
                     }
-                } catch (e) {
-                    // Lỗi (timeout ko thấy popup) thì im lặng, vì có thể token đã lấy được ngầm
+                } else {
+                    console.log("-> [AUTO-LOGIN] Không click được nút Đăng nhập với Google.");
+                }
+            } catch (e) {
+                if (!e.message.includes('Target closed') && !e.message.includes('detached')) {
+                    console.log("-> [AUTO-LOGIN] Lỗi khi đang tự động đăng nhập:", e.message);
                 }
             }
-        }, 3000);
+        })();
 
     } catch (error) {
-        // Nếu lỗi là do trình duyệt bị giật sập giữa chừng (detached/closed) thì bỏ qua
         if (!error.message.includes('detached') && !error.message.includes('Target closed') && !error.message.includes('Session closed')) {
             console.error(`->  Lỗi phụ khi load trang:`, error.message);
         }
     }
 }
 
+// Hàm được gọi khi lấy xong Token
+function finishSniffer() {
+    console.log("-> [2] Giật sập trình duyệt. Kích hoạt Radar cào dữ liệu ngầm.\n");
+    isRecovering = false;
+
+    // Kích hoạt tất cả các luồng chưa hoàn thành
+    targets.forEach((t, index) => {
+        if (!t.isDone) {
+            checkAvailableSlots(index);
+        }
+    });
+}
+
 // ==========================================
 // PHASE 2 & 3: RADAR + PRE-CHECK + AUTO KILL
 // ==========================================
-async function checkAvailableSlots() {
-    if (isSystemHalted) return;
+async function checkAvailableSlots(targetIndex) {
+    if (isSystemHalted || isRecovering) {
+        // Đang tác chiến hoặc đang xin Token thì luồng này ngủ thêm 5 giây rồi dậy check lại
+        setTimeout(() => checkAvailableSlots(targetIndex), 5000);
+        return;
+    }
+
+    let target = targets[targetIndex];
+    if (target.isDone) return;
 
     const timeNow = new Date().toLocaleTimeString();
     try {
         // Quét lấy danh sách lớp
-        const response = await axios.post(CHECK_API, PAYLOAD, { headers: getHeaders() });
+        const response = await axios.post(CHECK_API, target.payload, { headers: getHeaders() });
         const classes = response.data;
 
         if (!classes || classes.length === 0) {
-            console.log(`[${timeNow}]  Hệ thống báo: Không có lớp nào cho mã này. Dò tiếp nhịp sau...`);
-            scheduleNextRun();
+            target.lastMessage = `[${timeNow}] Hệ thống báo: Không có lớp nào cho mã này.`;
+            target.tableData = [];
+            scheduleNextRun(targetIndex);
             return;
         }
 
@@ -241,7 +378,7 @@ async function checkAvailableSlots() {
 
             // Nếu bật cờ CHỈ săn MOOC nhưng thông tin lớp này không chứa chữ UTExMC thì bỏ qua
             let classInfoStr = JSON.stringify(cls).toUpperCase();
-            if (isOnlyMooc && !classInfoStr.includes('UTEXMC')) {
+            if (target.isOnlyMooc && !classInfoStr.includes('UTEXMC')) {
                 continue;
             }
 
@@ -259,7 +396,7 @@ async function checkAvailableSlots() {
                 let currentStudents = parseInt(cls.NumberOfStudents);
                 let scheduleClean = cls.Schedules ? cls.Schedules.replace(/<br\/>/g, ' | ').trim() : 'N/A';
                 let status = ignoredClasses.includes(classId) ? ' TRÙNG LỊCH' : ' FULL';
-                let maLopHienThi = cls.ScheduleStudyUnitAlias || classId; // Ưu tiên hiển thị mã có đuôi UTExMC
+                let maLopHienThi = cls.ScheduleStudyUnitAlias || classId;
 
                 tableData.push({
                     'Mã Lớp': maLopHienThi,
@@ -275,9 +412,9 @@ async function checkAvailableSlots() {
         // KHỐI XỬ LÝ CƯỚP SLOT (CRITICAL SECTION)
         // ==========================================
         if (targetToKill) {
-            isSystemHalted = true; // Khóa luồng toàn cục
+            isSystemHalted = true; // Khóa luồng toàn cục để ưu tiên mạng cho thằng này
             console.clear();
-            console.log(`\n PHÁT HIỆN KHE HỞ! MỤC TIÊU: ${targetToKill.CurriculumID} `);
+            console.log(`\n PHÁT HIỆN KHE HỞ MÔN [${target.maMon}]! MỤC TIÊU: ${targetToKill.CurriculumID} `);
             console.log(`-> Bước 1: Đang Validation (Kiểm tra trùng lịch)...`);
 
             try {
@@ -291,8 +428,8 @@ async function checkAvailableSlots() {
                     console.log(`-> Đã ném ${targetAlias} vào Blacklist. Tiếp tục quét...`);
 
                     ignoredClasses.push(targetAlias);
-                    isSystemHalted = false; // Mở khóa
-                    scheduleNextRun();
+                    isSystemHalted = false; // Mở khóa cho các luồng khác
+                    scheduleNextRun(targetIndex);
                     return;
                 }
 
@@ -301,29 +438,35 @@ async function checkAvailableSlots() {
                 const registResponse = await axios.post(REGIST_API, [targetToKill], { headers: getHeaders() });
 
                 console.log(`-> [SERVER TRẢ VỀ]:`, registResponse.data);
-                console.log(`\n TÁC CHIẾN THÀNH CÔNG! ĐÃ CƯỚP ĐƯỢC SLOT! `);
+                console.log(`\n TÁC CHIẾN THÀNH CÔNG! ĐÃ CƯỚP ĐƯỢC SLOT MÔN ${target.maMon}! `);
                 let targetAlias = targetToKill.ScheduleStudyUnitAlias || targetToKill.CurriculumID;
                 console.log(`-> Môn: ${targetAlias}`);
                 console.log(`-> GV:  ${targetToKill.ProfessorName.trim()}`);
                 console.log('\x07\x07\x07\x07\x07'); // Kêu báo động chiến thắng 5 lần
 
-                console.log(`\n☠️ HỆ THỐNG HOÀN THÀNH NHIỆM VỤ VÀ TỰ HỦY. VÀO WEB KIỂM TRA LẠI TKB!`);
-                process.exit(0); // Rút ống thở
+                target.isDone = true; // Đánh dấu đã xong
+                isSystemHalted = false; // Mở khóa
+
+                // Kiểm tra xem tất cả các mục tiêu đã xong chưa
+                if (targets.every(t => t.isDone)) {
+                    console.log(`\n☠️ HỆ THỐNG ĐÃ HOÀN THÀNH TẤT CẢ NHIỆM VỤ VÀ TỰ HỦY. VÀO WEB KIỂM TRA LẠI TKB!`);
+                    process.exit(0);
+                } else {
+                    console.log(`\n-> Vẫn còn môn chưa đăng ký xong. Chuyển về Dashboard ngầm...`);
+                    // Delay tí rồi render lại dashboard
+                    setTimeout(renderDashboard, 2000);
+                }
 
             } catch (error) {
                 console.error(`->  LỖI MẠNG KHI CƯỚP SLOT:`, error.message);
                 isSystemHalted = false;
-                scheduleNextRun();
+                scheduleNextRun(targetIndex);
             }
         } else {
-            // Render giao diện giám sát
-            console.clear();
-            console.log(`==============================================================================`);
-            console.log(`[📡 RADAR] Mục tiêu: ${PAYLOAD.ReqParam3} | Trạng thái: ${timeNow}`);
-            console.log(`==============================================================================\n`);
-            console.table(tableData);
-
-            scheduleNextRun(); // Chuyển sang nhịp quét tiếp theo
+            // Cập nhật log cho Dashboard
+            target.tableData = tableData;
+            target.lastMessage = `Quét lúc ${timeNow}`;
+            scheduleNextRun(targetIndex);
         }
 
     } catch (error) {
@@ -331,18 +474,19 @@ async function checkAvailableSlots() {
         // HỆ THỐNG XỬ LÝ LỖI (AUTO-RECOVERY CORE)
         // ==========================================
         if (error.response && error.response.status === 401) {
-            console.error(`\n[${timeNow}]  BÁO ĐỘNG: Token hết hạn (401)!`);
-            console.log(`->  KÍCH HOẠT AUTO-RECOVERY: Hệ thống tự động phục hồi khóa mới...`);
+            if (!isRecovering) {
+                isRecovering = true; // Block các luồng khác
+                console.error(`\n[${timeNow}]  BÁO ĐỘNG: Token hết hạn (401)!`);
+                console.log(`->  KÍCH HOẠT AUTO-RECOVERY: Hệ thống tự động phục hồi khóa mới...`);
+                jwtToken = ""; // Xóa bộ nhớ đệm thẻ cũ
 
-            jwtToken = ""; // Xóa bộ nhớ đệm thẻ cũ
-            isSystemHalted = false; // Mở khóa
-
-            startSniffer(); // Gọi ngược lên Phase 1
-            return; // Đảm bảo đứt đoạn luồng cũ
+                startSniffer();
+            }
+            // Luồng hiện tại ngủ chờ token mới
+            setTimeout(() => checkAvailableSlots(targetIndex), 5000);
         } else {
-            console.error(`\n[${timeNow}]  LỖI MẠNG HOẶC SERVER TRƯỜNG SẬP:`, error.message);
-            isSystemHalted = false;
-            scheduleNextRun(); // Lỗi linh tinh thì bỏ qua, chờ nhịp sau
+            target.lastMessage = `[${timeNow}]  LỖI MẠNG HOẶC SERVER SẬP: ${error.message}`;
+            scheduleNextRun(targetIndex);
         }
     }
 }
