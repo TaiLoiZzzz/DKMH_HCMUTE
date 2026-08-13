@@ -31,6 +31,7 @@ let jwtToken = "";
 let PAYLOAD = { ReqParam1: STUDY_PROGRAM_ID, ReqParam2: "NKH", ReqParam3: "" };
 let isSystemHalted = false; // Semaphore khóa luồng
 let ignoredClasses = [];    // Blacklist các lớp trùng lịch
+let isOnlyMooc = false;     // Cờ lọc lớp MOOC
 
 const rl = readline.createInterface({
     input: process.stdin,
@@ -84,10 +85,19 @@ rl.question(' Nhập mã môn học mày muốn săn (VD: 261LLCT120205): ', (an
     }
     PAYLOAD.ReqParam3 = maMon;
     console.log(`\n-> [LOCKED] Đã khóa mục tiêu: ${PAYLOAD.ReqParam3}`);
-    rl.close();
 
-    // Kích hoạt chuỗi dây chuyền
-    startSniffer();
+    rl.question(' Bạn có muốn CHỈ chọn lớp MOOC không? (y = Chỉ MOOC, n = Tất cả các lớp): ', (moocAns) => {
+        isOnlyMooc = moocAns.trim().toLowerCase() === 'y';
+        if (isOnlyMooc) {
+            console.log(`-> [LOCKED] Chế độ: CHỈ săn lớp MOOC (đuôi UTExMC)!`);
+        } else {
+            console.log(`-> [LOCKED] Chế độ: Săn TẤT CẢ các lớp!`);
+        }
+        rl.close();
+
+        // Kích hoạt chuỗi dây chuyền
+        startSniffer();
+    });
 });
 
 // ==========================================
@@ -179,7 +189,7 @@ async function startSniffer() {
                     if (popup) {
                         console.log("-> [AUTO-LOGIN] Đã bắt được Popup Google, đang chọn email...");
                         // Đợi một chút cho danh sách tài khoản load xong
-                        await new Promise(resolve => setTimeout(resolve, 3000)); 
+                        await new Promise(resolve => setTimeout(resolve, 3000));
 
                         // 3. Click vào tài khoản sinh viên
                         await popup.evaluate(() => {
@@ -227,8 +237,15 @@ async function checkAvailableSlots() {
         let targetToKill = null;
 
         for (let cls of classes) {
+            let classId = cls.ScheduleStudyUnitAlias || 'N/A';
+
+            // Nếu bật cờ CHỈ săn MOOC nhưng thông tin lớp này không chứa chữ UTExMC thì bỏ qua
+            let classInfoStr = JSON.stringify(cls).toUpperCase();
+            if (isOnlyMooc && !classInfoStr.includes('UTEXMC')) {
+                continue;
+            }
+
             let emptySlots = parseInt(cls.NumberRegistOfEmpty);
-            let classId = cls.CurriculumID;
 
             // ĐIỀU KIỆN CHỐT HẠ: Slot > 0 AND Chưa có mục tiêu AND Không nằm trong Blacklist
             if (emptySlots > 0 && !targetToKill && !ignoredClasses.includes(classId)) {
@@ -242,9 +259,10 @@ async function checkAvailableSlots() {
                 let currentStudents = parseInt(cls.NumberOfStudents);
                 let scheduleClean = cls.Schedules ? cls.Schedules.replace(/<br\/>/g, ' | ').trim() : 'N/A';
                 let status = ignoredClasses.includes(classId) ? ' TRÙNG LỊCH' : ' FULL';
+                let maLopHienThi = cls.ScheduleStudyUnitAlias || classId; // Ưu tiên hiển thị mã có đuôi UTExMC
 
                 tableData.push({
-                    'Mã Lớp': classId,
+                    'Mã Lớp': maLopHienThi,
                     'Giảng Viên': cls.ProfessorName.trim(),
                     'Lịch Học': scheduleClean,
                     'Sĩ Số': `${currentStudents}/${maxSlots}`,
@@ -269,9 +287,10 @@ async function checkAvailableSlots() {
 
                 if (checkData.IsConflict || checkData.IsFull) {
                     console.log(`\n BỎ QUA: Lớp này bị trùng lịch thời khóa biểu của mày!`);
-                    console.log(`-> Đã ném ${targetToKill.CurriculumID} vào Blacklist. Tiếp tục quét...`);
+                    let targetAlias = targetToKill.ScheduleStudyUnitAlias || targetToKill.CurriculumID;
+                    console.log(`-> Đã ném ${targetAlias} vào Blacklist. Tiếp tục quét...`);
 
-                    ignoredClasses.push(targetToKill.CurriculumID);
+                    ignoredClasses.push(targetAlias);
                     isSystemHalted = false; // Mở khóa
                     scheduleNextRun();
                     return;
@@ -283,7 +302,8 @@ async function checkAvailableSlots() {
 
                 console.log(`-> [SERVER TRẢ VỀ]:`, registResponse.data);
                 console.log(`\n TÁC CHIẾN THÀNH CÔNG! ĐÃ CƯỚP ĐƯỢC SLOT! `);
-                console.log(`-> Môn: ${targetToKill.CurriculumID}`);
+                let targetAlias = targetToKill.ScheduleStudyUnitAlias || targetToKill.CurriculumID;
+                console.log(`-> Môn: ${targetAlias}`);
                 console.log(`-> GV:  ${targetToKill.ProfessorName.trim()}`);
                 console.log('\x07\x07\x07\x07\x07'); // Kêu báo động chiến thắng 5 lần
 

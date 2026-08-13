@@ -1,52 +1,66 @@
-Auto-Kill ĐKMH HCMUTE - Enterprise Architecture
-Hệ thống tự động hóa đăng ký môn học (Auto-Registration Bot) dành cho sinh viên trường Đại học Sư phạm Kỹ thuật TP.HCM (HCMUTE). Được thiết kế theo kiến trúc hướng sự kiện (Event-driven) và tối ưu hóa xử lý bất đồng bộ, công cụ này giúp tự động quét, phân tích và chiếm slot môn học trong vòng mili-giây.
+# HCMUTE Course Registration Automation
 
- Kiến trúc & Tính năng cốt lõi (Core Features)
-Man-in-the-Middle (MitM) Token Sniffing: Sử dụng Puppeteer để chặn bắt (intercept) các outbound HTTP request, tự động bóc tách JWT Token từ Header của giao diện Web mà không cần phải gọi lại API xác thực thủ công.
+Dự án này cung cấp một công cụ tự động hóa quy trình đăng ký môn học dành cho sinh viên trường Đại học Sư phạm Kỹ thuật TP.HCM (HCMUTE). Hệ thống được thiết kế dựa trên kiến trúc hướng sự kiện (Event-driven) và tối ưu hóa xử lý bất đồng bộ, giúp việc giám sát và đăng ký học phần diễn ra liên tục, tự động và ổn định.
 
-Stealth Engine (Anti-Bot Bypass): Tích hợp puppeteer-extra-plugin-stealth và giả mạo Fingerprint (User-Agent, WebGL) để vượt qua hệ thống reCAPTCHA v3 và các cơ chế phát hiện tự động hóa của Google/Trường.
+## Kiến trúc & Tính năng cốt lõi
 
-Auto-Recovery (Self-Healing Session): Khi JWT Token hết hạn (401 Unauthorized), hệ thống tự động đánh thức trình duyệt ẩn, nạp lại Cookie cục bộ (Local Session) để xin cấp Token mới và tiếp tục chạy ngầm hoàn toàn tự động.
+* **Token Interception (Đánh chặn Token):** Sử dụng Puppeteer để chặn bắt (intercept) các outbound HTTP request, tự động bóc tách JWT Token từ quá trình xác thực mà không cần can thiệp thủ công.
+* **Anti-Bot Bypass:** Tích hợp `puppeteer-extra-plugin-stealth` để quản lý fingerprint của trình duyệt, vượt qua các cơ chế kiểm tra tự động.
+* **Auto-Recovery (Tự động phục hồi):** Tự động phát hiện khi JWT Token hết hạn (lỗi 401 Unauthorized), khởi chạy lại tiến trình xác thực ngầm để lấy Token mới và tiếp tục phiên làm việc mà không làm gián đoạn hệ thống.
+* **Jitter Polling:** Áp dụng độ trễ ngẫu nhiên (từ 240s đến 360s) giữa các chu kỳ kiểm tra để giảm tải cho máy chủ trường và tránh bị hệ thống tường lửa (Rate Limiting) chặn kết nối.
+* **Pre-Check Validation:** Tự động kiểm tra trước các điều kiện đăng ký (trùng thời khóa biểu, lớp đã đầy) trước khi gửi yêu cầu đăng ký chính thức, đảm bảo tính hợp lệ của request.
 
-Random Jitter Polling: Tự động hóa độ trễ ngẫu nhiên (50s - 75s) giữa các lần gọi API, mô phỏng hành vi thao tác của người thật để vượt qua hệ thống tường lửa (WAF / Rate Limiting).
+## Yêu cầu hệ thống
 
-Pre-Check Validation: Cơ chế kiểm định chặt chẽ trước khi thực thi. Tự động kiểm tra điều kiện trùng thời khóa biểu (IsConflict) hoặc giới hạn tín chỉ trước khi gửi lệnh POST đăng ký, ngăn ngừa lỗi vòng lặp vô tận.
+* Node.js (Khuyến nghị phiên bản LTS v18 trở lên).
+* Trình quản lý gói npm (đi kèm với Node.js).
+* Google Chrome hoặc Chromium.
 
- Yêu cầu hệ thống (Prerequisites)
-Đảm bảo máy tính của bạn đã cài đặt môi trường sau:
+## Cài đặt
 
-Node.js (Khuyến nghị bản LTS v18+)
+1. Clone kho lưu trữ này về máy:
+   ```bash
+   git clone https://github.com/TaiLoiZzzz/DKMH_HCMUTE.git
+   cd DKMH_HCMUTE
+   ```
 
-Trình quản lý gói npm.
- Cài đặt (Installation)
-Clone kho lưu trữ này về máy:
+2. Cài đặt các thư viện phụ thuộc:
+   ```bash
+   npm install
+   ```
+   *(Các thư viện chính bao gồm: `puppeteer`, `puppeteer-extra`, `puppeteer-extra-plugin-stealth`, `axios`, `dotenv`)*
 
-Bash
-git clone https://github.com/your-username/auto-kill-dkmh.git
-cd auto-kill-dkmh
-Cài đặt các thư viện lõi (Dependencies):
+## Cấu hình
 
-Bash
-npm install puppeteer puppeteer-extra puppeteer-extra-plugin-stealth axios readline
- Cấu hình (Configuration)
-Trước khi chạy, bạn cần cập nhật các thông số cục bộ trong file auto_dkmh.js (Phần CẤU HÌNH LÕI HỆ THỐNG):
+Tạo một file `.env` tại thư mục gốc của dự án và điền các thông số sau:
 
-TURN_ID: Mã đợt đăng ký hiện tại (Ví dụ: 77). Bạn có thể lấy mã này bằng cách F12 (Network tab) trên trình duyệt khi bấm đăng ký một môn bất kỳ.
+```env
+API_KEY=
+CLIENT_ID=
+TURN_ID=
+STUDY_PROGRAM_ID=
+```
 
-STUDY_PROGRAM_ID: Mã chương trình học của bạn (Ví dụ: 5 số đầu của MSSV).
+* `TURN_ID`: Mã đợt đăng ký hiện tại (có thể lấy bằng cách kiểm tra tab Network trên trình duyệt khi thực hiện thao tác trên trang đăng ký).
+* `STUDY_PROGRAM_ID`: Mã chương trình học của bạn (thường là 5 chữ số đầu của mã số sinh viên).
+* `API_KEY` và `CLIENT_ID`: Lấy từ header của request khi trường gọi API.
 
- Hướng dẫn vận hành (Usage)
-Khởi động công cụ thông qua Terminal:
+## Hướng dẫn sử dụng
 
-Bash
-node auto_dkmh.js
-Nhập mã môn học hệ thống yêu cầu (Ví dụ: 261LLCT120205). Hệ thống sẽ khóa mục tiêu và bắt đầu quy trình tác chiến.
+1. Khởi chạy công cụ thông qua Terminal:
+   ```bash
+   node app.js
+   ```
 
-Ở lần chạy đầu tiên, trình duyệt sẽ mở lên yêu cầu đăng nhập Google. Từ các lần sau, hệ thống sẽ tự động dùng session đã lưu trên ổ cứng để hoạt động ngầm hoàn toàn.
+2. Nhập mã môn học hệ thống yêu cầu (Ví dụ: `120205` cho mã môn `261120205`). Hệ thống sẽ tự động ghép tiền tố và bắt đầu quá trình giám sát.
 
-Treo máy hoặc triển khai trên VPS. Khi đăng ký thành công, hệ thống sẽ phát âm báo động và tự động đóng tiến trình.
+3. **Lưu ý trong quá trình chạy:**
+   * Ở lần chạy đầu tiên, hệ thống sẽ mở một cửa sổ trình duyệt. Trình duyệt sẽ tự động cố gắng nhấn nút đăng nhập và chọn tài khoản Google của bạn (nếu đã lưu session).
+   * Sau khi đăng nhập thành công, dữ liệu phiên làm việc sẽ được lưu cục bộ trong thư mục `chrome_profile_dkmh`. Từ các lần sau, hệ thống sẽ tận dụng session này để hoạt động hoàn toàn tự động.
+   * Khi phát hiện có vị trí trống và thỏa mãn các điều kiện, hệ thống sẽ tiến hành gửi yêu cầu đăng ký, phát âm báo động (beep) và tự động kết thúc tiến trình.
 
- Cảnh báo trách nhiệm (Disclaimer)
-Dự án này được viết với mục đích nghiên cứu kiến trúc hệ thống mạng, API Interception và kỹ thuật tự động hóa (Educational Purposes Only).
+## Khước từ trách nhiệm (Disclaimer)
 
-Người dùng tự chịu mọi trách nhiệm về rủi ro tài khoản (nếu có) khi lạm dụng hệ thống hoặc vi phạm quy chế của nhà trường. Không khuyến khích thay đổi INTERVAL xuống mức quá thấp gây ảnh hưởng tới băng thông máy chủ chung.
+Dự án này được phát triển hoàn toàn vì mục đích học tập và nghiên cứu (Educational Purposes Only), tập trung vào việc tìm hiểu kiến trúc mạng, xử lý API và kỹ thuật tự động hóa trình duyệt.
+
+Người dùng tự chịu toàn bộ trách nhiệm về mọi rủi ro liên quan đến tài khoản cá nhân hoặc các vi phạm quy chế của nhà trường khi sử dụng công cụ này. Chúng tôi tuyệt đối không khuyến khích việc chỉnh sửa thời gian chờ (Polling Interval) xuống mức quá thấp, nhằm tránh gây ảnh hưởng tiêu cực đến hiệu suất và băng thông của hệ thống máy chủ chung.
