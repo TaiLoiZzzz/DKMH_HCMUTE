@@ -62,8 +62,8 @@ function getHeaders() {
 
 // 2. Sinh thời gian ngẫu nhiên (Từ 240s -> 360s) để né Tường lửa đếm nhịp
 function getRandomInterval() {
-    const min = 240 * 1000;
-    const max = 360 * 1000;
+    const min = 120 * 1000;
+    const max = 240 * 1000;
     return Math.floor(Math.random() * (max - min + 1) + min);
 }
 
@@ -97,7 +97,8 @@ function renderDashboard() {
             console.log(`[🎯 MỤC TIÊU ${index + 1}: ${t.maMon}] -> ✅ ĐÃ HOÀN THÀNH`);
             console.log("------------------------------------------------------------------");
         } else {
-            console.log(`[📡 RADAR ${index + 1}] Mục tiêu: ${t.maMon} ${t.isOnlyMooc ? "(Chỉ MOOC)" : "(Tất cả)"}`);
+            let targetType = t.isOnlyMooc ? "(Chỉ MOOC)" : (t.specificClasses && t.specificClasses.length > 0 ? `(Lớp: ${t.specificClasses.join(', ')})` : "(Tất cả)");
+            console.log(`[📡 RADAR ${index + 1}] Mục tiêu: ${t.maMon} ${targetType}`);
             console.log(`-> Nhịp quét tiếp theo lúc: ${t.nextRunTime || 'Đang chờ...'}`);
 
             if (t.tableData && t.tableData.length > 0) {
@@ -138,9 +139,18 @@ async function initSystem() {
         let moocAns = await askQuestion(' Bạn có muốn CHỈ chọn lớp MOOC không? (y = Chỉ MOOC, n = Tất cả các lớp): ');
         let isOnlyMooc = moocAns.trim().toLowerCase() === 'y';
 
+        let specificClasses = [];
+        if (!isOnlyMooc) {
+            let specificAns = await askQuestion(' Bạn có muốn CHỈ ĐỊNH CHÍNH XÁC mã lớp không? (Nhập các mã lớp cách nhau bằng dấu phẩy, hoặc nhấn Enter để chọn tất cả): ');
+            if (specificAns.trim()) {
+                specificClasses = specificAns.split(',').map(c => c.trim().toUpperCase()).filter(c => c);
+            }
+        }
+
         targets.push({
             maMon: maMon,
             isOnlyMooc: isOnlyMooc,
+            specificClasses: specificClasses,
             tableData: [],
             isDone: false,
             nextRunTime: null,
@@ -148,7 +158,8 @@ async function initSystem() {
             payload: { ReqParam1: STUDY_PROGRAM_ID, ReqParam2: "NKH", ReqParam3: maMon }
         });
 
-        console.log(`-> [LOCKED] Đã khóa mục tiêu ${i + 1}: ${maMon} ${isOnlyMooc ? "(Chỉ MOOC)" : "(Tất cả)"}`);
+        let targetType = isOnlyMooc ? "(Chỉ MOOC)" : (specificClasses.length > 0 ? `(Lớp: ${specificClasses.join(', ')})` : "(Tất cả)");
+        console.log(`-> [LOCKED] Đã khóa mục tiêu ${i + 1}: ${maMon} ${targetType}`);
     }
 
     rl.close();
@@ -380,6 +391,13 @@ async function checkAvailableSlots(targetIndex) {
             let classInfoStr = JSON.stringify(cls).toUpperCase();
             if (target.isOnlyMooc && !classInfoStr.includes('UTEXMC')) {
                 continue;
+            }
+
+            // Nếu có danh sách lớp chỉ định cụ thể, bỏ qua nếu mã lớp không nằm trong danh sách
+            if (target.specificClasses && target.specificClasses.length > 0) {
+                if (!target.specificClasses.includes(classId.toUpperCase())) {
+                    continue;
+                }
             }
 
             let emptySlots = parseInt(cls.NumberRegistOfEmpty);
